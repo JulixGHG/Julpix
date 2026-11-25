@@ -1,0 +1,49 @@
+name: Build iOS IPA (JulpixStats)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-ipa:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios/JulpixStats
+        run: xcodegen generate
+
+      - name: Build unsigned .app for iOS
+        working-directory: ios/JulpixStats
+        run: |
+          xcodebuild \
+            -project JulpixStats.xcodeproj \
+            -scheme JulpixStats \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package Payload into JulpixStats.ipa
+        working-directory: ios/JulpixStats
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/JulpixStats.app Payload/
+          zip -r JulpixStats.ipa Payload
+
+      - name: Upload JulpixStats.ipa Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JulpixStats-ipa
+          path: ios/JulpixStats/JulpixStats.ipa
+          retention-days: 30

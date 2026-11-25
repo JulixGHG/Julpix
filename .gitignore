@@ -1,0 +1,14 @@
+# .NET / Windows build artifacts
+windows/**/bin/
+windows/**/obj/
+windows/**/.vs/
+*.user
+*.suo
+
+# macOS / Xcode
+.DS_Store
+ios/**/build/
+ios/**/*.xcodeproj/
+ios/**/*.xcworkspace/
+ios/**/Payload/
+ios/**/*.ipa
