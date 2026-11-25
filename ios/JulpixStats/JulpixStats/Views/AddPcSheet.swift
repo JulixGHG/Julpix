@@ -255,11 +255,27 @@ final class QrScannerViewController: UIViewController, AVCaptureMetadataOutputOb
         view.backgroundColor = .black
 
         let status = AVCaptureDevice.authorizationStatus(for: .video)
-        if status == .denied || status == .restricted {
-            showCameraError("Kamerazugriff verweigert. Bitte in den iPhone-Einstellungen aktivieren.")
-            return
+        switch status {
+        case .authorized:
+            setupCameraSession()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                DispatchQueue.main.async {
+                    if granted {
+                        self?.setupCameraSession()
+                    } else {
+                        self?.showCameraError("Kamerazugriff verweigert. Bitte in den iPhone-Einstellungen aktivieren.")
+                    }
+                }
+            }
+        case .denied, .restricted:
+            showCameraError("Kamerazugriff verweigert. Bitte in den iPhone-Einstellungen für JulpixStats aktivieren.")
+        @unknown default:
+            showCameraError("Kamera nicht verfügbar.")
         }
+    }
 
+    private func setupCameraSession() {
         let session = AVCaptureSession()
         guard let device = AVCaptureDevice.default(for: .video),
               let input = try? AVCaptureDeviceInput(device: device),
@@ -283,6 +299,7 @@ final class QrScannerViewController: UIViewController, AVCaptureMetadataOutputOb
 
         self.session = session
         self.previewLayer = preview
+        updatePreviewOrientation()
 
         DispatchQueue.global(qos: .userInitiated).async {
             session.startRunning()
@@ -308,6 +325,10 @@ final class QrScannerViewController: UIViewController, AVCaptureMetadataOutputOb
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         previewLayer?.frame = view.bounds
+        updatePreviewOrientation()
+    }
+
+    private func updatePreviewOrientation() {
         if let conn = previewLayer?.connection, conn.isVideoOrientationSupported {
             let interfaceOrientation = view.window?.windowScene?.interfaceOrientation
             switch interfaceOrientation {

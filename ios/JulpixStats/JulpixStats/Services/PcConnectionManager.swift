@@ -209,19 +209,88 @@ final class PcConnectionManager: ObservableObject {
         stats = nil
     }
 
-    // MARK: - UDP LAN Discovery (Port 52841)
+    // MARK: - LAN Discovery (UDP 52841 + HTTP /health Subnet Scan on 52840)
 
     func discoverLocalPcs() {
         isDiscovering = true
         discoveredPcs = []
 
         Task.detached { [weak self] in
-            let found = Self.performUdpBroadcastDiscovery()
+            async let udpResults = Self.performUdpBroadcastDiscovery()
+            async let httpResults = Self.performHttpSubnetDiscovery()
+
+            var combined = await udpResults
+            for item in await httpResults where !combined.contains(item) {
+                combined.append(item)
+            }
+
             await MainActor.run {
-                self?.discoveredPcs = found
+                self?.discoveredPcs = combined
                 self?.isDiscovering = false
             }
         }
+    }
+
+    private nonisolated static func performHttpSubnetDiscovery() async -> [DiscoveredPc] {
+        guard let wifiIp = getWifiIPv4Address() else { return [] }
+        let parts = wifiIp.split(separator: ".")
+        guard parts.count == 4 else { return [] }
+        let prefix = "\(parts[0]).\(parts[1]).\(parts[2])"
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 0.7
+        config.timeoutIntervalForResource = 0.8
+        let session = URLSession(configuration: config)
+
+        return await withTaskGroup(of: DiscoveredPc?.self) { group in
+            for host in 1...254 {
+                let candidateIp = "\(prefix).\(host)"
+                if candidateIp == wifiIp { continue }
+                group.addTask {
+                    guard let url = URL(string: "http://\(candidateIp):52840/health") else { return nil }
+                    do {
+                        let (data, response) = try await session.data(from: url)
+                        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                              (obj["app"] as? String) == "JulpixConnect",
+                              let name = obj["name"] as? String else { return nil }
+                        let port = (obj["port"] as? Int) ?? 52840
+                        return DiscoveredPc(name: name, ip: candidateIp, port: port)
+                    } catch {
+                        return nil
+                    }
+                }
+            }
+
+            var found: [DiscoveredPc] = []
+            for await item in group {
+                if let item, !found.contains(item) {
+                    found.append(item)
+                }
+            }
+            return found
+        }
+    }
+
+    private nonisolated static func getWifiIPv4Address() -> String? {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+
+        for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
+            let interface = ptr.pointee
+            let addrFamily = interface.ifa_addr.pointee.sa_family
+            if addrFamily == UInt8(AF_INET) {
+                let name = String(cString: interface.ifa_name)
+                if name == "en0" || name == "en1" {
+                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                                &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST)
+                    return String(cString: hostname)
+                }
+            }
+        }
+        return nil
     }
 
     private nonisolated static func performUdpBroadcastDiscovery() -> [DiscoveredPc] {
