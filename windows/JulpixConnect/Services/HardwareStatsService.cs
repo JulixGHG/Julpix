@@ -13,12 +13,13 @@ namespace JulpixConnect.Services;
 public sealed class HardwareStatsService : IDisposable
 {
     private readonly Computer _computer;
-    private readonly string _cpuName;
-    private readonly string _gpuNameFallback;
-    private readonly double? _gpuVramTotalFallbackMb;
-    private readonly string _osName;
-    private readonly int? _ramSpeedMhz;
-    private readonly int _physicalCores;
+    private string _cpuName = "CPU";
+    private string _gpuNameFallback = "GPU";
+    private double? _gpuVramTotalFallbackMb;
+    private string _osName = RuntimeInformation.OSDescription;
+    private int? _ramSpeedMhz;
+    private int _physicalCores = Environment.ProcessorCount;
+    private volatile bool _isReady;
 
     private PerformanceCounter? _cpuTotalCounter;
     private readonly List<PerformanceCounter> _cpuCoreCounters = new();
@@ -44,22 +45,26 @@ public sealed class HardwareStatsService : IDisposable
             IsStorageEnabled = false
         };
 
-        try
+        _ = Task.Run(() =>
         {
-            _computer.Open();
-        }
-        catch
-        {
-            // May partially fail without admin; WMI & PerformanceCounter fallbacks handle it
-        }
+            try
+            {
+                _computer.Open();
+            }
+            catch
+            {
+                // May partially fail without admin; WMI & PerformanceCounter fallbacks handle it
+            }
 
-        _cpuName = QueryWmiString("SELECT Name FROM Win32_Processor", "Name") ?? "CPU";
-        _physicalCores = QueryWmiInt("SELECT NumberOfCores FROM Win32_Processor", "NumberOfCores") ?? Environment.ProcessorCount;
-        (_gpuNameFallback, _gpuVramTotalFallbackMb) = QueryGpuInfo();
-        _osName = QueryWmiString("SELECT Caption FROM Win32_OperatingSystem", "Caption") ?? RuntimeInformation.OSDescription;
-        _ramSpeedMhz = QueryWmiInt("SELECT Speed FROM Win32_PhysicalMemory", "Speed");
+            _cpuName = QueryWmiString("SELECT Name FROM Win32_Processor", "Name") ?? "CPU";
+            _physicalCores = QueryWmiInt("SELECT NumberOfCores FROM Win32_Processor", "NumberOfCores") ?? Environment.ProcessorCount;
+            (_gpuNameFallback, _gpuVramTotalFallbackMb) = QueryGpuInfo();
+            _osName = QueryWmiString("SELECT Caption FROM Win32_OperatingSystem", "Caption") ?? RuntimeInformation.OSDescription;
+            _ramSpeedMhz = QueryWmiInt("SELECT Speed FROM Win32_PhysicalMemory", "Speed");
 
-        InitPerformanceCounters();
+            InitPerformanceCounters();
+            _isReady = true;
+        });
     }
 
     private void InitPerformanceCounters()
@@ -96,6 +101,17 @@ public sealed class HardwareStatsService : IDisposable
 
     public PcStatsPayload Collect(string customPcName)
     {
+        if (!_isReady)
+        {
+            return new PcStatsPayload
+            {
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                System = CollectSystem(customPcName),
+                Memory = CollectMemory(),
+                Network = CollectNetwork()
+            };
+        }
+
         var payload = new PcStatsPayload
         {
             Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
@@ -485,6 +501,30 @@ public sealed class HardwareStatsService : IDisposable
     {
         try
         {
+            var candidates = NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up &&
+                            n.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
+                            n.NetworkInterfaceType != NetworkInterfaceType.Tunnel &&
+                            !n.Name.Contains("Nord", StringComparison.OrdinalIgnoreCase) &&
+                            !n.Name.Contains("ZeroTier", StringComparison.OrdinalIgnoreCase) &&
+                            !n.Name.Contains("Radmin", StringComparison.OrdinalIgnoreCase) &&
+                            !n.Name.Contains("vEthernet", StringComparison.OrdinalIgnoreCase) &&
+                            !n.Name.Contains("Virtual", StringComparison.OrdinalIgnoreCase) &&
+                            !n.Name.Contains("VMware", StringComparison.OrdinalIgnoreCase))
+                .SelectMany(n => n.GetIPProperties().UnicastAddresses
+                    .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
+                    .Select(a => (Adapter: n, Ip: a.Address.ToString())))
+                .ToList();
+
+            var lan192 = candidates.FirstOrDefault(c => c.Ip.StartsWith("192.168."));
+            if (!string.IsNullOrEmpty(lan192.Ip)) return lan192.Ip;
+
+            if (candidates.Count > 0) return candidates[0].Ip;
+        }
+        catch { }
+
+        try
+        {
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, 0);
             socket.Connect("8.8.8.8", 65530);
             if (socket.LocalEndPoint is System.Net.IPEndPoint endPoint)
@@ -492,10 +532,7 @@ public sealed class HardwareStatsService : IDisposable
         }
         catch { }
 
-        return NetworkInterface.GetAllNetworkInterfaces()
-            .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
-            .SelectMany(n => n.GetIPProperties().UnicastAddresses)
-            .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork)?.Address.ToString() ?? "127.0.0.1";
+        return "127.0.0.1";
     }
 
     private static string? QueryWmiString(string query, string prop)

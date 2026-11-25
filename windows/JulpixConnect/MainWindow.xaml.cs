@@ -147,6 +147,33 @@ public partial class MainWindow : Window
         Hide();
     }
 
+    private void OpenFirewall_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var port = _configService.Config.Port;
+            var cmd = $"netsh advfirewall firewall delete rule name=\"JulpixConnect\" & " +
+                      $"netsh advfirewall firewall add rule name=\"JulpixConnect\" dir=in action=allow protocol=TCP localport={port} & " +
+                      $"netsh advfirewall firewall add rule name=\"JulpixConnect\" dir=in action=allow protocol=UDP localport=52841";
+
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = $"/c {cmd}",
+                Verb = "runas",
+                UseShellExecute = true,
+                CreateNoWindow = true
+            };
+            var proc = System.Diagnostics.Process.Start(psi);
+            proc?.WaitForExit(5000);
+            System.Windows.MessageBox.Show($"Firewall-Regel für Port {port} (TCP) und 52841 (UDP) wurde hinzugefügt.", "JulpixConnect", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show($"Firewall-Freigabe abgebrochen oder fehlgeschlagen: {ex.Message}", "JulpixConnect", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         if (!_isClosingForReal)

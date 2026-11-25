@@ -62,6 +62,7 @@
                         <TextBlock x:Name="StatusText" Text="Server aktiv" FontWeight="SemiBold" FontSize="12" Foreground="#3FB950"/>
                     </StackPanel>
                 </Border>
+                <Button Content="Firewall freigeben" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0" Click="OpenFirewall_Click"/>
                 <Button Content="In Tray minimieren" Style="{StaticResource SecondaryButton}" Click="MinimizeToTray_Click"/>
             </StackPanel>
         </Grid>

@@ -254,10 +254,19 @@ final class QrScannerViewController: UIViewController, AVCaptureMetadataOutputOb
         super.viewDidLoad()
         view.backgroundColor = .black
 
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        if status == .denied || status == .restricted {
+            showCameraError("Kamerazugriff verweigert. Bitte in den iPhone-Einstellungen aktivieren.")
+            return
+        }
+
         let session = AVCaptureSession()
         guard let device = AVCaptureDevice.default(for: .video),
               let input = try? AVCaptureDeviceInput(device: device),
-              session.canAddInput(input) else { return }
+              session.canAddInput(input) else {
+            showCameraError("Kamera konnte nicht gestartet werden.")
+            return
+        }
 
         session.addInput(input)
 
@@ -280,13 +289,30 @@ final class QrScannerViewController: UIViewController, AVCaptureMetadataOutputOb
         }
     }
 
+    private func showCameraError(_ text: String) {
+        let label = UILabel()
+        label.text = text
+        label.textColor = .white
+        label.textAlignment = .center
+        label.numberOfLines = 0
+        label.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+            label.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24)
+        ])
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         previewLayer?.frame = view.bounds
         if let conn = previewLayer?.connection, conn.isVideoOrientationSupported {
-            switch UIDevice.current.orientation {
-            case .landscapeLeft: conn.videoOrientation = .landscapeRight
-            case .landscapeRight: conn.videoOrientation = .landscapeLeft
+            let interfaceOrientation = view.window?.windowScene?.interfaceOrientation
+            switch interfaceOrientation {
+            case .landscapeLeft: conn.videoOrientation = .landscapeLeft
+            case .landscapeRight: conn.videoOrientation = .landscapeRight
             default: conn.videoOrientation = .landscapeRight
             }
         }
