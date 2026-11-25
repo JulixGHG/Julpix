@@ -169,10 +169,12 @@ struct AddPcSheet: View {
                     Button("Fertig") { dismiss() }
                 }
             }
-            .sheet(isPresented: $showScanner) {
+            .fullScreenCover(isPresented: $showScanner) {
                 QrScannerSheet { code in
-                    handleQrCode(code)
                     showScanner = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        handleQrCode(code)
+                    }
                 }
             }
             .onAppear {
@@ -246,7 +248,8 @@ struct QrCameraPreview: UIViewControllerRepresentable {
 
 final class QrScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
     var onScanned: ((String) -> Void)?
-    private var session: AVCaptureSession?
+    private let session = AVCaptureSession()
+    private let sessionQueue = DispatchQueue(label: "com.julpix.qr.session")
     private var previewLayer: AVCaptureVideoPreviewLayer?
     private var didScan = false
 
@@ -254,16 +257,22 @@ final class QrScannerViewController: UIViewController, AVCaptureMetadataOutputOb
         super.viewDidLoad()
         view.backgroundColor = .black
 
+        let preview = AVCaptureVideoPreviewLayer(session: session)
+        preview.videoGravity = .resizeAspectFill
+        preview.frame = view.bounds
+        view.layer.addSublayer(preview)
+        self.previewLayer = preview
+
         let status = AVCaptureDevice.authorizationStatus(for: .video)
         switch status {
         case .authorized:
-            setupCameraSession()
+            configureAndStartSession()
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
-                DispatchQueue.main.async {
-                    if granted {
-                        self?.setupCameraSession()
-                    } else {
+                if granted {
+                    self?.configureAndStartSession()
+                } else {
+                    DispatchQueue.main.async {
                         self?.showCameraError("Kamerazugriff verweigert. Bitte in den iPhone-Einstellungen aktivieren.")
                     }
                 }
@@ -275,34 +284,39 @@ final class QrScannerViewController: UIViewController, AVCaptureMetadataOutputOb
         }
     }
 
-    private func setupCameraSession() {
-        let session = AVCaptureSession()
-        guard let device = AVCaptureDevice.default(for: .video),
-              let input = try? AVCaptureDeviceInput(device: device),
-              session.canAddInput(input) else {
-            showCameraError("Kamera konnte nicht gestartet werden.")
-            return
-        }
+    private func configureAndStartSession() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.session.beginConfiguration()
 
-        session.addInput(input)
+            guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+                    ?? AVCaptureDevice.default(for: .video),
+                  let input = try? AVCaptureDeviceInput(device: device),
+                  self.session.canAddInput(input) else {
+                self.session.commitConfiguration()
+                DispatchQueue.main.async {
+                    self.showCameraError("Kamera konnte nicht gestartet werden.")
+                }
+                return
+            }
 
-        let output = AVCaptureMetadataOutput()
-        guard session.canAddOutput(output) else { return }
-        session.addOutput(output)
-        output.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
-        output.metadataObjectTypes = [.qr]
+            self.session.addInput(input)
 
-        let preview = AVCaptureVideoPreviewLayer(session: session)
-        preview.videoGravity = .resizeAspectFill
-        preview.frame = view.bounds
-        view.layer.addSublayer(preview)
+            let output = AVCaptureMetadataOutput()
+            if self.session.canAddOutput(output) {
+                self.session.addOutput(output)
+                output.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
+                if output.availableMetadataObjectTypes.contains(.qr) {
+                    output.metadataObjectTypes = [.qr]
+                }
+            }
 
-        self.session = session
-        self.previewLayer = preview
-        updatePreviewOrientation()
+            self.session.commitConfiguration()
+            self.session.startRunning()
 
-        DispatchQueue.global(qos: .userInitiated).async {
-            session.startRunning()
+            DispatchQueue.main.async {
+                self.updatePreviewOrientation()
+            }
         }
     }
 
@@ -341,7 +355,11 @@ final class QrScannerViewController: UIViewController, AVCaptureMetadataOutputOb
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        session?.stopRunning()
+        sessionQueue.async { [weak self] in
+            if self?.session.isRunning == true {
+                self?.session.stopRunning()
+            }
+        }
     }
 
     func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput metadataObjects: [AVMetadataObject], from connection: AVCaptureConnection) {
@@ -349,7 +367,11 @@ final class QrScannerViewController: UIViewController, AVCaptureMetadataOutputOb
               let obj = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
               let str = obj.stringValue else { return }
         didScan = true
-        session?.stopRunning()
+        sessionQueue.async { [weak self] in
+            if self?.session.isRunning == true {
+                self?.session.stopRunning()
+            }
+        }
         onScanned?(str)
     }
 }
